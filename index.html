@@ -3,372 +3,429 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Simple 3D Driving Game</title>
+  <title>Simple Driving Game</title>
   <style>
-    html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#0b1020; }
-    #hud{
-      position:fixed; top:12px; left:12px; color:#e8ecff; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      font-size:14px; line-height:1.4; padding:10px 12px; border-radius:12px;
-      background:rgba(0,0,0,0.35); backdrop-filter: blur(8px);
-      max-width: 320px;
-    }
-    #hud b{ font-weight:700; }
-    #hint{ opacity:0.9; font-size:12px; margin-top:6px; }
-    #banner{
-      position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
-      color:#e8ecff; font-family:system-ui; font-size:13px; padding:8px 12px;
-      border-radius:999px; background:rgba(0,0,0,0.35); backdrop-filter: blur(8px);
-    }
-    canvas{ display:block; }
+    html, body { margin: 0; height: 100%; background:#0b0f14; color:#e8eef7; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #wrap { display:flex; flex-direction:column; align-items:center; gap:10px; padding:12px; }
+    canvas { background:#111826; border:1px solid #243045; border-radius:12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    .hud { width: min(920px, 95vw); display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .pill { background:#121a29; border:1px solid #243045; padding:8px 10px; border-radius:999px; font-size:14px; }
+    .hint { opacity:.85; font-size:13px; }
+    button { cursor:pointer; border-radius:10px; border:1px solid #243045; background:#121a29; color:#e8eef7; padding:8px 10px; }
+    button:hover { filter:brightness(1.1); }
   </style>
 </head>
 <body>
-  <div id="hud">
-    <div><b>Simple Driving Game</b></div>
-    <div id="stats">Speed: 0 | Score: 0</div>
-    <div id="hint">
-      Controls: W/S accelerate/brake, A/D steer, Space handbrake, R reset
+  <div id="wrap">
+    <div class="hud">
+      <div class="pill" id="stat">Speed: 0 | Score: 0 | HP: 100</div>
+      <div class="pill hint">Controls: W/A/S/D or ↑/←/↓/→ • Space = Handbrake • R = Restart</div>
+      <button id="restart">Restart</button>
     </div>
+
+    <canvas id="game" width="900" height="540"></canvas>
   </div>
-  <div id="banner">Stay on the road and dodge cones. Go faster to score more.</div>
 
-  <script type="module">
-    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+<script>
+(() => {
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const statEl = document.getElementById("stat");
+  const restartBtn = document.getElementById("restart");
 
-    // ---------- Renderer / Scene / Camera ----------
-    const renderer = new THREE.WebGLRenderer({ antialias:true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    document.body.appendChild(renderer.domElement);
+  // ---------- Game constants ----------
+  const W = canvas.width, H = canvas.height;
 
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0b1020, 40, 220);
+  // Road is "infinite" vertically; we just scroll lane markers.
+  const road = {
+    x: W * 0.5,
+    width: 420,
+    laneCount: 3,
+    markerGap: 42,
+    markerLen: 24,
+    scroll: 0
+  };
 
-    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 600);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a,b,t) => a + (b-a)*t;
 
-    // ---------- Lights ----------
-    scene.add(new THREE.HemisphereLight(0xbfd3ff, 0x203050, 0.95));
-    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-    sun.position.set(30, 50, -20);
-    scene.add(sun);
+  // ---------- Input ----------
+  const keys = new Set();
+  window.addEventListener("keydown", (e) => {
+    keys.add(e.code);
+    if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
+    if (e.code === "KeyR") reset();
+  }, { passive:false });
+  window.addEventListener("keyup", (e) => keys.delete(e.code));
 
-    // ---------- Ground ----------
-    const groundGeo = new THREE.PlaneGeometry(400, 1200, 1, 1);
-    const groundMat = new THREE.MeshStandardMaterial({ color: 0x0f1730, roughness: 1 });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.01;
-    scene.add(ground);
+  // ---------- Entities ----------
+  const player = {
+    x: road.x,
+    y: H * 0.78,
+    w: 34,
+    h: 64,
+    angle: 0,       // visual tilt
+    vx: 0,
+    speed: 0,       // forward speed (road scroll)
+    hp: 100,
+    invuln: 0       // frames of invulnerability after hit
+  };
 
-    // ---------- Road Segments (recycled) ----------
-    const ROAD_W = 18;
-    const SEG_LEN = 60;
-    const SEG_COUNT = 14;
+  let obstacles = [];
+  let particles = [];
+  let score = 0;
+  let gameOver = false;
 
-    const roadGroup = new THREE.Group();
-    scene.add(roadGroup);
+  function spawnObstacle() {
+    // pick a lane center
+    const laneW = road.width / road.laneCount;
+    const lane = Math.floor(Math.random() * road.laneCount);
+    const laneCenter = (road.x - road.width/2) + laneW*lane + laneW/2;
 
-    const roadSegments = [];
-    const roadGeo = new THREE.PlaneGeometry(ROAD_W, SEG_LEN, 1, 1);
+    // obstacle sizes / types
+    const type = Math.random() < 0.75 ? "cone" : "car";
+    const w = type === "cone" ? 22 : 38;
+    const h = type === "cone" ? 28 : 70;
 
-    const roadMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3f, roughness: 0.9, metalness: 0.0 });
-    const lineMat = new THREE.MeshStandardMaterial({ color: 0xe8ecff, roughness: 0.6 });
-
-    function makeRoadSegment(z) {
-      const seg = new THREE.Group();
-
-      const road = new THREE.Mesh(roadGeo, roadMat);
-      road.rotation.x = -Math.PI/2;
-      road.position.set(0, 0, z);
-      seg.add(road);
-
-      // Lane markers (simple dashed look)
-      for (let i=0;i<6;i++){
-        const dashGeo = new THREE.PlaneGeometry(0.35, 3.2);
-        const dash = new THREE.Mesh(dashGeo, lineMat);
-        dash.rotation.x = -Math.PI/2;
-        dash.position.set(0, 0.01, z - SEG_LEN/2 + 6 + i*9);
-        seg.add(dash);
-      }
-
-      // Road edges (subtle)
-      const edgeGeo = new THREE.PlaneGeometry(0.25, SEG_LEN);
-      const edgeL = new THREE.Mesh(edgeGeo, lineMat);
-      const edgeR = edgeL.clone();
-      edgeL.material = lineMat;
-      edgeR.material = lineMat;
-
-      edgeL.rotation.x = -Math.PI/2;
-      edgeR.rotation.x = -Math.PI/2;
-      edgeL.position.set(-ROAD_W/2, 0.01, z);
-      edgeR.position.set( ROAD_W/2, 0.01, z);
-      seg.add(edgeL, edgeR);
-
-      return seg;
-    }
-
-    for (let i=0;i<SEG_COUNT;i++){
-      const z = -i * SEG_LEN;
-      const seg = makeRoadSegment(z);
-      roadGroup.add(seg);
-      roadSegments.push({ group: seg, z });
-    }
-
-    // ---------- Car ----------
-    const car = new THREE.Group();
-    scene.add(car);
-
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(1.9, 0.55, 3.6),
-      new THREE.MeshStandardMaterial({ color: 0x4aa3ff, roughness: 0.4, metalness: 0.2 })
-    );
-    body.position.y = 0.5;
-    car.add(body);
-
-    const cabin = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 0.6, 1.6),
-      new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.2, metalness: 0.1 })
-    );
-    cabin.position.set(0, 0.9, -0.2);
-    car.add(cabin);
-
-    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0b0f1a, roughness: 1 });
-    function wheel(x,z){
-      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.32,0.28,18), wheelMat);
-      w.rotation.z = Math.PI/2;
-      w.position.set(x, 0.28, z);
-      return w;
-    }
-    car.add(wheel(-0.95,  1.2), wheel(0.95,  1.2), wheel(-0.95, -1.2), wheel(0.95, -1.2));
-
-    // Car physics state
-    const state = {
-      pos: new THREE.Vector3(0,0,0),
-      yaw: 0,
-      vel: new THREE.Vector3(0,0,0),  // world velocity
-      speed: 0,                       // forward speed scalar
-    };
-
-    // ---------- Obstacles (cones) ----------
-    const obstacleGroup = new THREE.Group();
-    scene.add(obstacleGroup);
-
-    const obstacles = [];
-    const coneGeo = new THREE.ConeGeometry(0.45, 1.1, 16);
-    const coneMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.7 });
-
-    function spawnObstacle(z) {
-      const cone = new THREE.Mesh(coneGeo, coneMat);
-      cone.position.set(
-        THREE.MathUtils.randFloat(-ROAD_W/2 + 1.5, ROAD_W/2 - 1.5),
-        0.55,
-        z
-      );
-      cone.rotation.y = THREE.MathUtils.randFloat(0, Math.PI*2);
-      obstacleGroup.add(cone);
-      obstacles.push(cone);
-    }
-
-    // Pre-spawn a bunch down the road
-    for (let i=0;i<28;i++){
-      spawnObstacle(-30 - i*22);
-    }
-
-    // ---------- Input ----------
-    const keys = new Set();
-    window.addEventListener("keydown", (e) => { keys.add(e.code); });
-    window.addEventListener("keyup",   (e) => { keys.delete(e.code); });
-
-    // ---------- HUD ----------
-    const statsEl = document.getElementById("stats");
-    let score = 0;
-    let crashed = false;
-
-    // ---------- Helpers ----------
-    function resetCar() {
-      state.pos.set(0,0,0);
-      state.yaw = 0;
-      state.vel.set(0,0,0);
-      state.speed = 0;
-      crashed = false;
-    }
-
-    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
-
-    // Simple collision (car AABB-ish vs cone radius)
-    function checkCollisions() {
-      const carX = state.pos.x;
-      const carZ = state.pos.z;
-
-      for (const cone of obstacles) {
-        const dx = cone.position.x - carX;
-        const dz = cone.position.z - carZ;
-        const dist = Math.hypot(dx, dz);
-        if (dist < 1.2) return cone;
-      }
-      return null;
-    }
-
-    // ---------- Camera follow ----------
-    function updateCamera(dt){
-      // Follow behind in car-forward direction
-      const forward = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
-      const behind = forward.clone().multiplyScalar(-9.5);
-      const up = new THREE.Vector3(0, 5.0, 0);
-
-      const desired = state.pos.clone().add(behind).add(up);
-      camera.position.lerp(desired, 1 - Math.pow(0.001, dt)); // framerate independent smoothing
-
-      const lookAt = state.pos.clone().add(forward.clone().multiplyScalar(10)).add(new THREE.Vector3(0, 1.2, 0));
-      camera.lookAt(lookAt);
-    }
-
-    // ---------- Main loop ----------
-    const clock = new THREE.Clock();
-
-    function animate(){
-      requestAnimationFrame(animate);
-      const dt = Math.min(clock.getDelta(), 0.033);
-
-      // Reset
-      if (keys.has("KeyR")) resetCar();
-
-      // Controls
-      const accel = keys.has("KeyW") ? 1 : 0;
-      const brake = keys.has("KeyS") ? 1 : 0;
-      const left  = keys.has("KeyA") ? 1 : 0;
-      const right = keys.has("KeyD") ? 1 : 0;
-      const handbrake = keys.has("Space") ? 1 : 0;
-
-      // Parameters
-      const MAX_SPEED = 48;              // units/s
-      const ACCEL = 28;                  // units/s^2
-      const BRAKE = 44;
-      const ROLL_RESIST = 6.0;
-      const LATERAL_GRIP = handbrake ? 2.5 : 7.0; // lower grip = more slide
-      const STEER_RATE = 1.9;            // rad/s at full speed
-      const STEER_AT_LOW = 0.9;          // steering when slow
-
-      if (!crashed){
-        // Update speed (forward scalar)
-        if (accel) state.speed += ACCEL * dt;
-        if (brake) state.speed -= BRAKE * dt;
-
-        // Natural rolling resistance (slows to 0)
-        if (!accel && !brake){
-          const s = state.speed;
-          const drop = ROLL_RESIST * dt;
-          if (Math.abs(s) <= drop) state.speed = 0;
-          else state.speed -= Math.sign(s) * drop;
-        }
-
-        state.speed = clamp(state.speed, -12, MAX_SPEED);
-
-        // Steering scale with speed (less twitchy at low speed)
-        const speed01 = clamp(Math.abs(state.speed) / MAX_SPEED, 0, 1);
-        const steer = (right - left);
-        const steerStrength = (STEER_AT_LOW * (1 - speed01) + STEER_RATE * speed01);
-        state.yaw += steer * steerStrength * dt * (0.35 + 0.65*speed01) * Math.sign(state.speed || 1);
-
-        // Forward direction
-        const forward = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
-
-        // Desired velocity = forward * speed
-        const desiredVel = forward.clone().multiplyScalar(state.speed);
-
-        // Blend current velocity toward desired, with separate lateral grip
-        // Decompose current velocity into forward/lateral components relative to car
-        const rightVec = new THREE.Vector3(forward.z, 0, -forward.x);
-
-        const vF = forward.dot(state.vel);
-        const vR = rightVec.dot(state.vel);
-
-        // Move forward component toward target quickly
-        const newVF = THREE.MathUtils.lerp(vF, state.speed, 1 - Math.pow(0.0005, dt));
-
-        // Reduce lateral velocity based on grip (handbrake lowers grip -> more slide)
-        const lateralDamp = 1 - Math.pow(0.06, dt * LATERAL_GRIP);
-        const newVR = THREE.MathUtils.lerp(vR, 0, lateralDamp);
-
-        state.vel.copy(forward.clone().multiplyScalar(newVF).add(rightVec.clone().multiplyScalar(newVR)));
-
-        // Integrate position
-        state.pos.add(state.vel.clone().multiplyScalar(dt));
-
-        // Road boundary "soft" pushback
-        const ROAD_LIMIT = ROAD_W/2 - 1.0;
-        if (state.pos.x < -ROAD_LIMIT) {
-          state.pos.x = -ROAD_LIMIT;
-          state.vel.x *= -0.15;
-          state.speed *= 0.75;
-        }
-        if (state.pos.x > ROAD_LIMIT) {
-          state.pos.x = ROAD_LIMIT;
-          state.vel.x *= -0.15;
-          state.speed *= 0.75;
-        }
-
-        // Collision
-        const hit = checkCollisions();
-        if (hit){
-          crashed = true;
-          state.speed *= -0.25;
-        }
-
-        // Score: gain for moving forward (negative z direction)
-        // In our setup, forward at yaw=0 is +z, but road segments are placed negative.
-        // We'll score based on distance traveled "down the road": -pos.z
-        score = Math.max(score, Math.floor(-state.pos.z));
-      } else {
-        // After crash: slow down and allow steering a bit
-        state.speed *= Math.pow(0.2, dt);
-        state.pos.add(state.vel.clone().multiplyScalar(dt));
-        state.vel.multiplyScalar(Math.pow(0.1, dt));
-      }
-
-      // Update road recycling based on car z
-      const carZ = state.pos.z;
-      // We keep segments centered around car by moving ones that are far behind to ahead
-      for (const seg of roadSegments){
-        // seg.z is the group's "center z" for its road plane
-        // If segment is far behind the car (greater z), move it ahead (more negative z)
-        if (seg.z - carZ > SEG_LEN * 2){
-          seg.z -= SEG_LEN * SEG_COUNT;
-          seg.group.position.z = seg.z;
-        }
-        seg.group.position.z = seg.z;
-      }
-
-      // Recycle obstacles: if behind car, move further ahead
-      for (const cone of obstacles){
-        if (cone.position.z - carZ > 25){
-          cone.position.z -= 520; // move ahead
-          cone.position.x = THREE.MathUtils.randFloat(-ROAD_W/2 + 1.5, ROAD_W/2 - 1.5);
-        }
-      }
-
-      // Apply car transform
-      car.position.set(state.pos.x, 0, state.pos.z);
-      car.rotation.y = state.yaw;
-
-      updateCamera(dt);
-
-      // HUD
-      const mph = Math.round(Math.abs(state.speed) * 3.2);
-      statsEl.textContent = `Speed: ${mph} | Score: ${score}` + (crashed ? " | CRASHED (press R)" : "");
-
-      renderer.render(scene, camera);
-    }
-
-    resetCar();
-    animate();
-
-    // ---------- Resize ----------
-    window.addEventListener("resize", () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+    obstacles.push({
+      x: laneCenter + (Math.random()*12 - 6),
+      y: -h - 10,
+      w, h,
+      type,
+      passed: false
     });
-  </script>
+  }
+
+  function addParticles(x,y,n=10) {
+    for (let i=0;i<n;i++){
+      particles.push({
+        x, y,
+        vx: (Math.random()*2-1)*2.3,
+        vy: (Math.random()*2-1)*2.3,
+        life: 30 + Math.random()*25
+      });
+    }
+  }
+
+  // ---------- Collision ----------
+  function aabb(ax,ay,aw,ah, bx,by,bw,bh){
+    return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+  }
+
+  // ---------- Reset ----------
+  function reset(){
+    obstacles = [];
+    particles = [];
+    score = 0;
+    gameOver = false;
+
+    player.x = road.x;
+    player.vx = 0;
+    player.speed = 0;
+    player.angle = 0;
+    player.hp = 100;
+    player.invuln = 0;
+
+    road.scroll = 0;
+
+    // seed a few obstacles
+    for (let i=0;i<4;i++){
+      spawnObstacle();
+      obstacles[obstacles.length-1].y = -140 * (i+1);
+    }
+  }
+  restartBtn.addEventListener("click", reset);
+
+  // ---------- Update ----------
+  let last = performance.now();
+  let spawnTimer = 0;
+
+  function update(dt){
+    if (gameOver) return;
+
+    // Input
+    const left  = keys.has("KeyA") || keys.has("ArrowLeft");
+    const right = keys.has("KeyD") || keys.has("ArrowRight");
+    const up    = keys.has("KeyW") || keys.has("ArrowUp");
+    const down  = keys.has("KeyS") || keys.has("ArrowDown");
+    const handbrake = keys.has("Space");
+
+    // Speed model
+    const accel = up ? 520 : 0;
+    const brake = down ? 620 : 0;
+    const drag = 220;
+
+    // forward speed affects road scroll + obstacle movement
+    player.speed += (accel - brake - drag) * dt;
+    if (!up && !down) player.speed += (-Math.sign(player.speed) * 140) * dt; // gentle auto-slow
+    player.speed = clamp(player.speed, -120, 780);
+
+    // steering strength depends on speed (harder to turn at low speed)
+    const speedFactor = clamp(Math.abs(player.speed)/600, 0.25, 1);
+    const steer = (right ? 1 : 0) - (left ? 1 : 0);
+    const steerAccel = 1200 * speedFactor;
+    player.vx += steer * steerAccel * dt;
+
+    // lateral friction (handbrake reduces friction => more drift)
+    const lateralFric = handbrake ? 2.5 : 7.5;
+    player.vx *= Math.exp(-lateralFric * dt);
+
+    // apply lateral motion
+    player.x += player.vx * dt;
+
+    // road bounds (keep inside asphalt, allow a tiny shoulder)
+    const halfRoad = road.width/2;
+    const minX = road.x - halfRoad + player.w*0.7;
+    const maxX = road.x + halfRoad - player.w*0.7;
+    if (player.x < minX) { player.x = minX; player.vx *= -0.25; }
+    if (player.x > maxX) { player.x = maxX; player.vx *= -0.25; }
+
+    // visual tilt based on vx
+    player.angle = lerp(player.angle, clamp(player.vx/520, -0.35, 0.35), 8*dt);
+
+    // Scroll road (higher speed => more scroll)
+    road.scroll += player.speed * dt;
+
+    // Spawn obstacles faster as score increases
+    spawnTimer += dt;
+    const baseInterval = 0.9;
+    const interval = clamp(baseInterval - score/2500, 0.42, baseInterval);
+    if (spawnTimer >= interval){
+      spawnTimer = 0;
+      spawnObstacle();
+    }
+
+    // Move obstacles "down" relative to speed
+    const obstacleSpeed = (player.speed + 240); // ensures things still move when speed small
+    for (const o of obstacles){
+      o.y += obstacleSpeed * dt;
+
+      // scoring when you pass
+      if (!o.passed && o.y > player.y + player.h){
+        o.passed = true;
+        score += (o.type === "cone" ? 10 : 25);
+      }
+    }
+    // remove offscreen
+    obstacles = obstacles.filter(o => o.y < H + 140);
+
+    // collisions
+    const px = player.x - player.w/2, py = player.y - player.h/2;
+    if (player.invuln > 0) player.invuln -= dt;
+
+    if (player.invuln <= 0){
+      for (const o of obstacles){
+        const ox = o.x - o.w/2, oy = o.y - o.h/2;
+        if (aabb(px,py,player.w,player.h, ox,oy,o.w,o.h)){
+          // hit
+          player.invuln = 0.75; // seconds
+          player.hp -= (o.type === "cone" ? 8 : 18);
+          player.speed *= 0.72;
+          player.vx *= -0.45;
+          addParticles(player.x, player.y, 14);
+          break;
+        }
+      }
+    }
+
+    // particles
+    for (const p of particles){
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      p.life -= 60*dt;
+    }
+    particles = particles.filter(p => p.life > 0);
+
+    // end
+    if (player.hp <= 0){
+      player.hp = 0;
+      gameOver = true;
+    }
+  }
+
+  // ---------- Draw ----------
+  function draw(){
+    // background
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#0b0f14";
+    ctx.fillRect(0,0,W,H);
+
+    // road
+    const rx = road.x - road.width/2;
+    ctx.fillStyle = "#1b2433";
+    ctx.fillRect(rx, 0, road.width, H);
+
+    // shoulders
+    ctx.fillStyle = "#101726";
+    ctx.fillRect(rx-30, 0, 30, H);
+    ctx.fillRect(rx+road.width, 0, 30, H);
+
+    // lane markers
+    const laneW = road.width / road.laneCount;
+
+    // solid borders
+    ctx.strokeStyle = "#e8eef7";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(rx, 0); ctx.lineTo(rx, H);
+    ctx.moveTo(rx+road.width, 0); ctx.lineTo(rx+road.width, H);
+    ctx.stroke();
+
+    // dashed lane dividers
+    ctx.strokeStyle = "#c9d4e8";
+    ctx.lineWidth = 2;
+    for (let i=1; i<road.laneCount; i++){
+      const x = rx + laneW*i;
+      ctx.setLineDash([road.markerLen, road.markerGap]);
+      ctx.lineDashOffset = -road.scroll;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, H);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // obstacles
+    for (const o of obstacles){
+      ctx.save();
+      ctx.translate(o.x, o.y);
+
+      if (o.type === "cone"){
+        ctx.fillStyle = "#ffb02e";
+        ctx.beginPath();
+        ctx.moveTo(0, -o.h/2);
+        ctx.lineTo(o.w/2, o.h/2);
+        ctx.lineTo(-o.w/2, o.h/2);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255,255,255,0.65)";
+        ctx.fillRect(-o.w*0.35, 2, o.w*0.7, 4);
+      } else {
+        // car obstacle
+        ctx.fillStyle = "#d04b4b";
+        ctx.fillRect(-o.w/2, -o.h/2, o.w, o.h);
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillRect(-o.w/2 + 4, -o.h/2 + 8, o.w-8, 18); // windshield
+        ctx.fillRect(-o.w/2 + 4, o.h/2 - 26, o.w-8, 18); // rear
+        ctx.fillStyle = "#2a3347";
+        ctx.fillRect(-o.w/2 - 4, -o.h/2 + 10, 6, 14);
+        ctx.fillRect(o.w/2 - 2, -o.h/2 + 10, 6, 14);
+        ctx.fillRect(-o.w/2 - 4, o.h/2 - 24, 6, 14);
+        ctx.fillRect(o.w/2 - 2, o.h/2 - 24, 6, 14);
+      }
+      ctx.restore();
+    }
+
+    // particles (crash sparks)
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    for (const p of particles){
+      ctx.globalAlpha = clamp(p.life/40, 0, 1);
+      ctx.fillRect(p.x-1, p.y-1, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+
+    // player car
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.rotate(player.angle);
+
+    // blink when invulnerable
+    if (player.invuln > 0 && Math.floor(performance.now()/80) % 2 === 0) {
+      ctx.globalAlpha = 0.55;
+    }
+
+    ctx.fillStyle = "#4aa3ff";
+    ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
+
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillRect(-player.w/2 + 4, -player.h/2 + 10, player.w-8, 18);
+
+    ctx.fillStyle = "#2a3347";
+    ctx.fillRect(-player.w/2 - 4, -player.h/2 + 10, 6, 14);
+    ctx.fillRect(player.w/2 - 2, -player.h/2 + 10, 6, 14);
+    ctx.fillRect(-player.w/2 - 4, player.h/2 - 24, 6, 14);
+    ctx.fillRect(player.w/2 - 2, player.h/2 - 24, 6, 14);
+
+    ctx.restore();
+    ctx.globalAlpha = 1;
+
+    // HUD overlay: HP bar
+    const barW = 240, barH = 12;
+    const bx = 18, by = 18;
+    ctx.fillStyle = "#121a29";
+    ctx.fillRect(bx, by, barW, barH);
+    ctx.fillStyle = "#e8eef7";
+    ctx.globalAlpha = 0.15;
+    ctx.fillRect(bx, by, barW, barH);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#e85d5d";
+    ctx.fillRect(bx, by, barW * (player.hp/100), barH);
+    ctx.strokeStyle = "#243045";
+    ctx.strokeRect(bx, by, barW, barH);
+
+    // Minimap
+    const mw = 150, mh = 120;
+    const mx = W - mw - 18, my = 18;
+    ctx.fillStyle = "#121a29";
+    ctx.fillRect(mx, my, mw, mh);
+    ctx.strokeStyle = "#243045";
+    ctx.strokeRect(mx, my, mw, mh);
+
+    // map road
+    const mapRoadW = mw * 0.6;
+    const mapRoadX = mx + (mw - mapRoadW)/2;
+    ctx.fillStyle = "#1b2433";
+    ctx.fillRect(mapRoadX, my+6, mapRoadW, mh-12);
+
+    // map player marker
+    const pMapX = mapRoadX + (player.x - (road.x-road.width/2)) / road.width * mapRoadW;
+    const pMapY = my + mh - 18;
+    ctx.fillStyle = "#4aa3ff";
+    ctx.fillRect(pMapX-3, pMapY-6, 6, 12);
+
+    // map obstacles
+    ctx.fillStyle = "#ffb02e";
+    for (const o of obstacles){
+      const oy = my + mh - 18 - ( (player.y - o.y) / 500 ) * (mh-28);
+      if (oy < my+10 || oy > my+mh-10) continue;
+      const ox = mapRoadX + (o.x - (road.x-road.width/2)) / road.width * mapRoadW;
+      ctx.fillRect(ox-2, oy-2, 4, 4);
+    }
+
+    // Game over overlay
+    if (gameOver){
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = "#e8eef7";
+      ctx.textAlign = "center";
+      ctx.font = "700 44px system-ui";
+      ctx.fillText("Game Over", W/2, H/2 - 20);
+      ctx.font = "400 18px system-ui";
+      ctx.fillText("Press R or click Restart", W/2, H/2 + 18);
+    }
+
+    // Text stats
+    const mph = Math.round(Math.abs(player.speed) * 0.12);
+    statEl.textContent = `Speed: ${mph} | Score: ${score} | HP: ${player.hp}`;
+  }
+
+  // ---------- Loop ----------
+  function loop(now){
+    const dt = Math.min(0.033, (now - last)/1000); // cap dt
+    last = now;
+
+    update(dt);
+    draw();
+
+    requestAnimationFrame(loop);
+  }
+
+  reset();
+  requestAnimationFrame(loop);
+})();
+</script>
 </body>
 </html>
