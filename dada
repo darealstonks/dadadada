@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple 3D Driving Game</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#0b1020; }
+    #hud{
+      position:fixed; top:12px; left:12px; color:#e8ecff; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      font-size:14px; line-height:1.4; padding:10px 12px; border-radius:12px;
+      background:rgba(0,0,0,0.35); backdrop-filter: blur(8px);
+      max-width: 320px;
+    }
+    #hud b{ font-weight:700; }
+    #hint{ opacity:0.9; font-size:12px; margin-top:6px; }
+    #banner{
+      position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
+      color:#e8ecff; font-family:system-ui; font-size:13px; padding:8px 12px;
+      border-radius:999px; background:rgba(0,0,0,0.35); backdrop-filter: blur(8px);
+    }
+    canvas{ display:block; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>Simple Driving Game</b></div>
+    <div id="stats">Speed: 0 | Score: 0</div>
+    <div id="hint">
+      Controls: W/S accelerate/brake, A/D steer, Space handbrake, R reset
+    </div>
+  </div>
+  <div id="banner">Stay on the road and dodge cones. Go faster to score more.</div>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+    // ---------- Renderer / Scene / Camera ----------
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0b1020, 40, 220);
+
+    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 600);
+
+    // ---------- Lights ----------
+    scene.add(new THREE.HemisphereLight(0xbfd3ff, 0x203050, 0.95));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(30, 50, -20);
+    scene.add(sun);
+
+    // ---------- Ground ----------
+    const groundGeo = new THREE.PlaneGeometry(400, 1200, 1, 1);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x0f1730, roughness: 1 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.01;
+    scene.add(ground);
+
+    // ---------- Road Segments (recycled) ----------
+    const ROAD_W = 18;
+    const SEG_LEN = 60;
+    const SEG_COUNT = 14;
+
+    const roadGroup = new THREE.Group();
+    scene.add(roadGroup);
+
+    const roadSegments = [];
+    const roadGeo = new THREE.PlaneGeometry(ROAD_W, SEG_LEN, 1, 1);
+
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3f, roughness: 0.9, metalness: 0.0 });
+    const lineMat = new THREE.MeshStandardMaterial({ color: 0xe8ecff, roughness: 0.6 });
+
+    function makeRoadSegment(z) {
+      const seg = new THREE.Group();
+
+      const road = new THREE.Mesh(roadGeo, roadMat);
+      road.rotation.x = -Math.PI/2;
+      road.position.set(0, 0, z);
+      seg.add(road);
+
+      // Lane markers (simple dashed look)
+      for (let i=0;i<6;i++){
+        const dashGeo = new THREE.PlaneGeometry(0.35, 3.2);
+        const dash = new THREE.Mesh(dashGeo, lineMat);
+        dash.rotation.x = -Math.PI/2;
+        dash.position.set(0, 0.01, z - SEG_LEN/2 + 6 + i*9);
+        seg.add(dash);
+      }
+
+      // Road edges (subtle)
+      const edgeGeo = new THREE.PlaneGeometry(0.25, SEG_LEN);
+      const edgeL = new THREE.Mesh(edgeGeo, lineMat);
+      const edgeR = edgeL.clone();
+      edgeL.material = lineMat;
+      edgeR.material = lineMat;
+
+      edgeL.rotation.x = -Math.PI/2;
+      edgeR.rotation.x = -Math.PI/2;
+      edgeL.position.set(-ROAD_W/2, 0.01, z);
+      edgeR.position.set( ROAD_W/2, 0.01, z);
+      seg.add(edgeL, edgeR);
+
+      return seg;
+    }
+
+    for (let i=0;i<SEG_COUNT;i++){
+      const z = -i * SEG_LEN;
+      const seg = makeRoadSegment(z);
+      roadGroup.add(seg);
+      roadSegments.push({ group: seg, z });
+    }
+
+    // ---------- Car ----------
+    const car = new THREE.Group();
+    scene.add(car);
+
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(1.9, 0.55, 3.6),
+      new THREE.MeshStandardMaterial({ color: 0x4aa3ff, roughness: 0.4, metalness: 0.2 })
+    );
+    body.position.y = 0.5;
+    car.add(body);
+
+    const cabin = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 0.6, 1.6),
+      new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.2, metalness: 0.1 })
+    );
+    cabin.position.set(0, 0.9, -0.2);
+    car.add(cabin);
+
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0b0f1a, roughness: 1 });
+    function wheel(x,z){
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.32,0.28,18), wheelMat);
+      w.rotation.z = Math.PI/2;
+      w.position.set(x, 0.28, z);
+      return w;
+    }
+    car.add(wheel(-0.95,  1.2), wheel(0.95,  1.2), wheel(-0.95, -1.2), wheel(0.95, -1.2));
+
+    // Car physics state
+    const state = {
+      pos: new THREE.Vector3(0,0,0),
+      yaw: 0,
+      vel: new THREE.Vector3(0,0,0),  // world velocity
+      speed: 0,                       // forward speed scalar
+    };
+
+    // ---------- Obstacles (cones) ----------
+    const obstacleGroup = new THREE.Group();
+    scene.add(obstacleGroup);
+
+    const obstacles = [];
+    const coneGeo = new THREE.ConeGeometry(0.45, 1.1, 16);
+    const coneMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.7 });
+
+    function spawnObstacle(z) {
+      const cone = new THREE.Mesh(coneGeo, coneMat);
+      cone.position.set(
+        THREE.MathUtils.randFloat(-ROAD_W/2 + 1.5, ROAD_W/2 - 1.5),
+        0.55,
+        z
+      );
+      cone.rotation.y = THREE.MathUtils.randFloat(0, Math.PI*2);
+      obstacleGroup.add(cone);
+      obstacles.push(cone);
+    }
+
+    // Pre-spawn a bunch down the road
+    for (let i=0;i<28;i++){
+      spawnObstacle(-30 - i*22);
+    }
+
+    // ---------- Input ----------
+    const keys = new Set();
+    window.addEventListener("keydown", (e) => { keys.add(e.code); });
+    window.addEventListener("keyup",   (e) => { keys.delete(e.code); });
+
+    // ---------- HUD ----------
+    const statsEl = document.getElementById("stats");
+    let score = 0;
+    let crashed = false;
+
+    // ---------- Helpers ----------
+    function resetCar() {
+      state.pos.set(0,0,0);
+      state.yaw = 0;
+      state.vel.set(0,0,0);
+      state.speed = 0;
+      crashed = false;
+    }
+
+    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+    // Simple collision (car AABB-ish vs cone radius)
+    function checkCollisions() {
+      const carX = state.pos.x;
+      const carZ = state.pos.z;
+
+      for (const cone of obstacles) {
+        const dx = cone.position.x - carX;
+        const dz = cone.position.z - carZ;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 1.2) return cone;
+      }
+      return null;
+    }
+
+    // ---------- Camera follow ----------
+    function updateCamera(dt){
+      // Follow behind in car-forward direction
+      const forward = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
+      const behind = forward.clone().multiplyScalar(-9.5);
+      const up = new THREE.Vector3(0, 5.0, 0);
+
+      const desired = state.pos.clone().add(behind).add(up);
+      camera.position.lerp(desired, 1 - Math.pow(0.001, dt)); // framerate independent smoothing
+
+      const lookAt = state.pos.clone().add(forward.clone().multiplyScalar(10)).add(new THREE.Vector3(0, 1.2, 0));
+      camera.lookAt(lookAt);
+    }
+
+    // ---------- Main loop ----------
+    const clock = new THREE.Clock();
+
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      // Reset
+      if (keys.has("KeyR")) resetCar();
+
+      // Controls
+      const accel = keys.has("KeyW") ? 1 : 0;
+      const brake = keys.has("KeyS") ? 1 : 0;
+      const left  = keys.has("KeyA") ? 1 : 0;
+      const right = keys.has("KeyD") ? 1 : 0;
+      const handbrake = keys.has("Space") ? 1 : 0;
+
+      // Parameters
+      const MAX_SPEED = 48;              // units/s
+      const ACCEL = 28;                  // units/s^2
+      const BRAKE = 44;
+      const ROLL_RESIST = 6.0;
+      const LATERAL_GRIP = handbrake ? 2.5 : 7.0; // lower grip = more slide
+      const STEER_RATE = 1.9;            // rad/s at full speed
+      const STEER_AT_LOW = 0.9;          // steering when slow
+
+      if (!crashed){
+        // Update speed (forward scalar)
+        if (accel) state.speed += ACCEL * dt;
+        if (brake) state.speed -= BRAKE * dt;
+
+        // Natural rolling resistance (slows to 0)
+        if (!accel && !brake){
+          const s = state.speed;
+          const drop = ROLL_RESIST * dt;
+          if (Math.abs(s) <= drop) state.speed = 0;
+          else state.speed -= Math.sign(s) * drop;
+        }
+
+        state.speed = clamp(state.speed, -12, MAX_SPEED);
+
+        // Steering scale with speed (less twitchy at low speed)
+        const speed01 = clamp(Math.abs(state.speed) / MAX_SPEED, 0, 1);
+        const steer = (right - left);
+        const steerStrength = (STEER_AT_LOW * (1 - speed01) + STEER_RATE * speed01);
+        state.yaw += steer * steerStrength * dt * (0.35 + 0.65*speed01) * Math.sign(state.speed || 1);
+
+        // Forward direction
+        const forward = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
+
+        // Desired velocity = forward * speed
+        const desiredVel = forward.clone().multiplyScalar(state.speed);
+
+        // Blend current velocity toward desired, with separate lateral grip
+        // Decompose current velocity into forward/lateral components relative to car
+        const rightVec = new THREE.Vector3(forward.z, 0, -forward.x);
+
+        const vF = forward.dot(state.vel);
+        const vR = rightVec.dot(state.vel);
+
+        // Move forward component toward target quickly
+        const newVF = THREE.MathUtils.lerp(vF, state.speed, 1 - Math.pow(0.0005, dt));
+
+        // Reduce lateral velocity based on grip (handbrake lowers grip -> more slide)
+        const lateralDamp = 1 - Math.pow(0.06, dt * LATERAL_GRIP);
+        const newVR = THREE.MathUtils.lerp(vR, 0, lateralDamp);
+
+        state.vel.copy(forward.clone().multiplyScalar(newVF).add(rightVec.clone().multiplyScalar(newVR)));
+
+        // Integrate position
+        state.pos.add(state.vel.clone().multiplyScalar(dt));
+
+        // Road boundary "soft" pushback
+        const ROAD_LIMIT = ROAD_W/2 - 1.0;
+        if (state.pos.x < -ROAD_LIMIT) {
+          state.pos.x = -ROAD_LIMIT;
+          state.vel.x *= -0.15;
+          state.speed *= 0.75;
+        }
+        if (state.pos.x > ROAD_LIMIT) {
+          state.pos.x = ROAD_LIMIT;
+          state.vel.x *= -0.15;
+          state.speed *= 0.75;
+        }
+
+        // Collision
+        const hit = checkCollisions();
+        if (hit){
+          crashed = true;
+          state.speed *= -0.25;
+        }
+
+        // Score: gain for moving forward (negative z direction)
+        // In our setup, forward at yaw=0 is +z, but road segments are placed negative.
+        // We'll score based on distance traveled "down the road": -pos.z
+        score = Math.max(score, Math.floor(-state.pos.z));
+      } else {
+        // After crash: slow down and allow steering a bit
+        state.speed *= Math.pow(0.2, dt);
+        state.pos.add(state.vel.clone().multiplyScalar(dt));
+        state.vel.multiplyScalar(Math.pow(0.1, dt));
+      }
+
+      // Update road recycling based on car z
+      const carZ = state.pos.z;
+      // We keep segments centered around car by moving ones that are far behind to ahead
+      for (const seg of roadSegments){
+        // seg.z is the group's "center z" for its road plane
+        // If segment is far behind the car (greater z), move it ahead (more negative z)
+        if (seg.z - carZ > SEG_LEN * 2){
+          seg.z -= SEG_LEN * SEG_COUNT;
+          seg.group.position.z = seg.z;
+        }
+        seg.group.position.z = seg.z;
+      }
+
+      // Recycle obstacles: if behind car, move further ahead
+      for (const cone of obstacles){
+        if (cone.position.z - carZ > 25){
+          cone.position.z -= 520; // move ahead
+          cone.position.x = THREE.MathUtils.randFloat(-ROAD_W/2 + 1.5, ROAD_W/2 - 1.5);
+        }
+      }
+
+      // Apply car transform
+      car.position.set(state.pos.x, 0, state.pos.z);
+      car.rotation.y = state.yaw;
+
+      updateCamera(dt);
+
+      // HUD
+      const mph = Math.round(Math.abs(state.speed) * 3.2);
+      statsEl.textContent = `Speed: ${mph} | Score: ${score}` + (crashed ? " | CRASHED (press R)" : "");
+
+      renderer.render(scene, camera);
+    }
+
+    resetCar();
+    animate();
+
+    // ---------- Resize ----------
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
