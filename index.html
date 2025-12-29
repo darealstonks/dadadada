@@ -2,636 +2,534 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Canvas Driving Game</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3D Driving Game</title>
   <style>
-    html, body { height: 100%; margin: 0; background:#0b0f14; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-    #wrap { position: relative; width: 100vw; height: 100vh; }
-    canvas { width: 100%; height: 100%; display:block; image-rendering: crisp-edges; }
-    .hud {
-      position:absolute; left:16px; bottom:16px;
-      color:#e9eef6; background:rgba(0,0,0,.35);
-      border:1px solid rgba(255,255,255,.15);
-      border-radius:14px; padding:10px 12px;
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background:#000; }
+    #hud {
+      position: fixed; left: 14px; bottom: 14px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      color: #eaf2ff;
+      background: rgba(10,14,22,.45);
+      border: 1px solid rgba(160,180,255,.18);
+      backdrop-filter: blur(8px);
+      padding: 10px 12px;
+      border-radius: 12px;
+      min-width: 190px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      user-select: none;
+    }
+    #hud .big { font-size: 22px; font-weight: 800; letter-spacing: .3px; }
+    #hud .small { font-size: 12px; opacity: .85; line-height: 1.4; }
+    #hud .bar {
+      margin-top: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.12);
+      overflow: hidden;
+    }
+    #hud .fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, rgba(120,210,255,.9), rgba(110,255,180,.95));
+    }
+    #help {
+      position: fixed; top: 12px; left: 12px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      color: rgba(235,245,255,.92);
+      background: rgba(10,14,22,.35);
+      border: 1px solid rgba(160,180,255,.14);
       backdrop-filter: blur(6px);
-      min-width: 220px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      max-width: 360px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      user-select: none;
     }
-    .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-    .label { font-size:12px; opacity:.85; }
-    .value { font-weight:700; letter-spacing:.2px; }
-    .bar {
-      height:10px; border-radius:999px; overflow:hidden;
-      background:rgba(255,255,255,.12);
-      margin-top:8px;
-    }
-    .bar > div {
-      height:100%;
-      width:0%;
-      background: linear-gradient(90deg, #4cf, #7f7, #ff6);
-      border-radius:999px;
-    }
-    .tips {
-      position:absolute; right:16px; top:16px;
-      color:#e9eef6; background:rgba(0,0,0,.35);
-      border:1px solid rgba(255,255,255,.15);
-      border-radius:14px; padding:10px 12px;
-      backdrop-filter: blur(6px);
-      max-width: 330px;
-      font-size: 13px;
-      line-height: 1.35;
-    }
-    kbd{
-      padding:2px 6px; border-radius:8px;
-      border:1px solid rgba(255,255,255,.2);
-      background:rgba(255,255,255,.08);
-      font-size: 12px;
-    }
+    #help b { color: #fff; }
+    #help .dim { opacity: .75; font-size: 12px; margin-top: 6px; line-height: 1.35; }
+    canvas { display:block; }
   </style>
 </head>
 <body>
-<div id="wrap">
-  <canvas id="c"></canvas>
-
-  <div class="hud">
-    <div class="row">
-      <div>
-        <div class="label">Speed</div>
-        <div class="value"><span id="spd">0</span> mph</div>
-      </div>
-      <div style="text-align:right">
-        <div class="label">Gear</div>
-        <div class="value" id="gear">D</div>
-      </div>
-    </div>
-    <div class="bar"><div id="spdBar"></div></div>
-    <div class="label" style="margin-top:8px; opacity:.75">Off-road slows you down.</div>
+  <div id="help">
+    <div><b>Controls</b>: W / ↑ accelerate, S / ↓ brake/reverse, <b>A left</b>, <b>D right</b>, Space = handbrake</div>
+    <div class="dim">Tip: hold W and steer into the curves. If you fly off-road, the car slows down.</div>
+  </div>
+  <div id="hud">
+    <div class="big"><span id="mph">0</span> mph</div>
+    <div class="small">Speed: <span id="ms">0.0</span> m/s · Gear: <span id="gear">N</span></div>
+    <div class="bar"><div class="fill" id="speedFill"></div></div>
   </div>
 
-  <div class="tips">
-    <div style="font-weight:700; margin-bottom:6px;">Controls</div>
-    <div>
-      <kbd>W</kbd> accelerate &nbsp; <kbd>S</kbd> brake / reverse<br/>
-      <kbd>A</kbd> turn left &nbsp; <kbd>D</kbd> turn right (fixed ✅)<br/>
-      <kbd>Space</kbd> handbrake &nbsp; <kbd>R</kbd> reset
-    </div>
-  </div>
-</div>
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
 
-<script>
-(() => {
-  // ===== Canvas setup =====
-  const canvas = document.getElementById('c');
-  const ctx = canvas.getContext('2d');
+    // ---------- Renderer / Scene / Camera ----------
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
 
-  function resize() {
-    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-  window.addEventListener('resize', resize);
-  resize();
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x9fb6ff, 0.0022);
 
-  // ===== Input =====
-  const keys = new Set();
-  window.addEventListener('keydown', (e) => {
-    keys.add(e.code);
-    // prevent page scroll with space
-    if (["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
-  });
-  window.addEventListener('keyup', (e) => keys.delete(e.code));
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(0, 6, 14);
 
-  // ===== World / Map =====
-  // We use a big "world" with a wavy road polyline. Road is "in" if you're within roadHalfWidth of the centerline.
-  const world = {
-    w: 5200,
-    h: 3600,
-    roadHalfWidth: 120,
-    shoulder: 50
-  };
+    // Sky-ish background
+    scene.background = new THREE.Color(0x9fb6ff);
 
-  // Create a loop road from control points, then sample a smooth path.
-  const controlPts = [
-    {x: 600, y: 700}, {x: 1500, y: 500}, {x: 2500, y: 650}, {x: 3300, y: 1100},
-    {x: 4400, y: 900}, {x: 4700, y: 1700}, {x: 4200, y: 2650}, {x: 3000, y: 3100},
-    {x: 2000, y: 3000}, {x: 1200, y: 2600}, {x: 650, y: 1800}
-  ];
+    // Lights
+    const hemi = new THREE.HemisphereLight(0xdde8ff, 0x1b2440, 0.9);
+    scene.add(hemi);
 
-  function catmullRom(p0, p1, p2, p3, t) {
-    const t2 = t*t, t3 = t2*t;
-    return {
-      x: 0.5 * ((2*p1.x) + (-p0.x + p2.x)*t + (2*p0.x - 5*p1.x + 4*p2.x - p3.x)*t2 + (-p0.x + 3*p1.x - 3*p2.x + p3.x)*t3),
-      y: 0.5 * ((2*p1.y) + (-p0.y + p2.y)*t + (2*p0.y - 5*p1.y + 4*p2.y - p3.y)*t2 + (-p0.y + 3*p1.y - 3*p2.y + p3.y)*t3)
-    };
-  }
+    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+    sun.position.set(40, 70, 20);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 250;
+    sun.shadow.camera.left = -120;
+    sun.shadow.camera.right = 120;
+    sun.shadow.camera.top = 120;
+    sun.shadow.camera.bottom = -120;
+    scene.add(sun);
 
-  function buildRoad(samplesPerSeg = 70) {
-    const pts = controlPts;
-    const road = [];
-    for (let i = 0; i < pts.length; i++) {
-      const p0 = pts[(i - 1 + pts.length) % pts.length];
-      const p1 = pts[i];
-      const p2 = pts[(i + 1) % pts.length];
-      const p3 = pts[(i + 2) % pts.length];
-      for (let s = 0; s < samplesPerSeg; s++) {
-        const t = s / samplesPerSeg;
-        road.push(catmullRom(p0, p1, p2, p3, t));
-      }
+    // Ground plane (far)
+    const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b6a3a, roughness: 1 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.02;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // ---------- Input ----------
+    const keys = new Set();
+    window.addEventListener("keydown", (e) => keys.add(e.code));
+    window.addEventListener("keyup", (e) => keys.delete(e.code));
+
+    // ---------- Car (cooler looking) ----------
+    const car = new THREE.Group();
+
+    // Body
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(2.0, 0.55, 4.2),
+      new THREE.MeshStandardMaterial({ color: 0x1e5bff, metalness: 0.65, roughness: 0.25 })
+    );
+    body.castShadow = true;
+    body.position.y = 0.65;
+    car.add(body);
+
+    // Cabin
+    const cabin = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 0.55, 1.6),
+      new THREE.MeshStandardMaterial({ color: 0x0d1020, metalness: 0.2, roughness: 0.15 })
+    );
+    cabin.castShadow = true;
+    cabin.position.set(0, 0.98, -0.25);
+    car.add(cabin);
+
+    // Front splitter
+    const splitter = new THREE.Mesh(
+      new THREE.BoxGeometry(2.05, 0.08, 0.55),
+      new THREE.MeshStandardMaterial({ color: 0x0b0e16, metalness: 0.3, roughness: 0.6 })
+    );
+    splitter.castShadow = true;
+    splitter.position.set(0, 0.45, 1.9);
+    car.add(splitter);
+
+    // Wheels
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x151824, roughness: 0.95 });
+    const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 18);
+    function makeWheel(x, z) {
+      const w = new THREE.Mesh(wheelGeo, wheelMat);
+      w.rotation.z = Math.PI / 2;
+      w.position.set(x, 0.42, z);
+      w.castShadow = true;
+      return w;
     }
-    return road;
-  }
+    const wheels = [
+      makeWheel(-0.95,  1.45),
+      makeWheel( 0.95,  1.45),
+      makeWheel(-0.95, -1.45),
+      makeWheel( 0.95, -1.45),
+    ];
+    wheels.forEach(w => car.add(w));
 
-  const roadPts = buildRoad(80);
+    car.position.set(0, 0, 0);
+    scene.add(car);
 
-  function dist2(ax, ay, bx, by) {
-    const dx = ax - bx, dy = ay - by;
-    return dx*dx + dy*dy;
-  }
+    // ---------- Road / Map (endless with curves + hills) ----------
+    const ROAD_HALF = 6.0;
+    const SEG_LEN = 18;
+    const SEG_COUNT = 90;
 
-  // Get minimum distance from a point to the road polyline (approx by segment sampling)
-  function pointToRoadDistance(px, py) {
-    // fast-ish: check nearest few points by coarse scan, then refine around that index
-    let bestI = 0, bestD = Infinity;
-    // coarse step
-    for (let i = 0; i < roadPts.length; i += 12) {
-      const p = roadPts[i];
-      const d = dist2(px, py, p.x, p.y);
-      if (d < bestD) { bestD = d; bestI = i; }
-    }
-    // refine neighborhood
-    bestD = Infinity;
-    const start = Math.max(0, bestI - 30);
-    const end = Math.min(roadPts.length - 1, bestI + 30);
-    for (let i = start; i <= end; i++) {
-      const p = roadPts[i];
-      const d = dist2(px, py, p.x, p.y);
-      if (d < bestD) bestD = d;
-    }
-    return Math.sqrt(bestD);
-  }
+    // Canvas texture for lane markings
+    const laneCanvas = document.createElement("canvas");
+    laneCanvas.width = 256; laneCanvas.height = 1024;
+    const ctx = laneCanvas.getContext("2d");
+    ctx.fillStyle = "#2f3340"; ctx.fillRect(0,0,laneCanvas.width,laneCanvas.height);
 
-  function isOnRoad(px, py) {
-    return pointToRoadDistance(px, py) <= world.roadHalfWidth;
-  }
-
-  // Background objects (trees/buildings/signs) placed near but not on road
-  function rand(min, max){ return Math.random()*(max-min)+min; }
-  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
-
-  const deco = [];
-  function tryPlaceDeco(count) {
-    let placed = 0, tries = 0;
-    while (placed < count && tries < count * 40) {
-      tries++;
-      const x = rand(120, world.w - 120);
-      const y = rand(120, world.h - 120);
-      const d = pointToRoadDistance(x, y);
-      if (d < world.roadHalfWidth + 40) continue;           // not on road
-      if (d > world.roadHalfWidth + 500) continue;          // keep them somewhat close so you see them
-      const typeRoll = Math.random();
-      let type = "tree";
-      if (typeRoll > 0.80) type = "building";
-      else if (typeRoll > 0.70) type = "sign";
-      deco.push({ x, y, type, s: rand(0.8, 1.4) });
-      placed++;
-    }
-  }
-  tryPlaceDeco(220);
-
-  // ===== Car (cooler + faster) =====
-  const car = {
-    x: roadPts[10].x,
-    y: roadPts[10].y,
-    angle: 0,             // radians
-    vx: 0,
-    vy: 0,
-    speed: 0,
-    maxSpeed: 820,        // world units/sec (FAST)
-    accel: 1050,          // stronger accel
-    brake: 1500,
-    turnRate: 2.55,       // rad/sec at speed
-    gripOnRoad: 10.0,
-    gripOffRoad: 3.0,
-    dragOnRoad: 0.85,
-    dragOffRoad: 0.55,
-    handbrakeGrip: 1.8
-  };
-
-  // HUD
-  const spdEl = document.getElementById('spd');
-  const gearEl = document.getElementById('gear');
-  const spdBar = document.getElementById('spdBar');
-
-  // ===== Camera =====
-  const camera = { x: car.x, y: car.y, smooth: 0.12 };
-
-  // ===== Drawing helpers =====
-  function drawGradientBackground(view) {
-    // simple sky-to-horizon gradient
-    const g = ctx.createLinearGradient(0, 0, 0, view.h);
-    g.addColorStop(0, "#1a2330");
-    g.addColorStop(0.55, "#0f1720");
-    g.addColorStop(1, "#0b0f14");
-    ctx.fillStyle = g;
-    ctx.fillRect(view.x, view.y, view.w, view.h);
-  }
-
-  function drawMountains(view) {
-    // parallax mountains using camera position
-    const par = 0.12;
-    const baseY = view.y + 120;
-    ctx.save();
-    ctx.globalAlpha = 0.28;
-    ctx.fillStyle = "#6a7b95";
+    // edge lines + center dashed lines
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 10;
     ctx.beginPath();
-    const offsetX = (-camera.x * par) % 900;
-    const startX = view.x - 900 + offsetX;
-    ctx.moveTo(startX, baseY + 220);
-    for (let x = startX; x < view.x + view.w + 900; x += 180) {
-      const peak = baseY + 80 + 60*Math.sin((x + camera.y*0.08) * 0.004);
-      ctx.lineTo(x + 90, peak);
-      ctx.lineTo(x + 180, baseY + 220);
-    }
-    ctx.lineTo(view.x + view.w + 1000, view.y + view.h);
-    ctx.lineTo(view.x - 1000, view.y + view.h);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function drawGround(view) {
-    // grass grid pattern
-    ctx.save();
-    ctx.fillStyle = "#123116";
-    ctx.fillRect(view.x, view.y, view.w, view.h);
-
-    ctx.globalAlpha = 0.12;
-    ctx.fillStyle = "#0a2410";
-    const step = 80;
-    const ox = (-camera.x * 0.25) % step;
-    const oy = (-camera.y * 0.25) % step;
-    for (let x = view.x + ox; x < view.x + view.w; x += step) {
-      for (let y = view.y + oy; y < view.y + view.h; y += step) {
-        ctx.fillRect(x, y, 2, 2);
-      }
-    }
-    ctx.restore();
-  }
-
-  function drawRoad(view) {
-    // Road as thick polyline + lane dashes
-    ctx.save();
-
-    // asphalt
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-
-    // shoulder
-    ctx.strokeStyle = "#30343b";
-    ctx.lineWidth = (world.roadHalfWidth + world.shoulder) * 2;
-    ctx.beginPath();
-    for (let i = 0; i < roadPts.length; i++) {
-      const p = roadPts[i];
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    }
-    ctx.closePath();
+    ctx.moveTo(24, 0); ctx.lineTo(24, laneCanvas.height);
+    ctx.moveTo(laneCanvas.width-24, 0); ctx.lineTo(laneCanvas.width-24, laneCanvas.height);
     ctx.stroke();
 
-    // road main
-    ctx.strokeStyle = "#1a1e24";
-    ctx.lineWidth = world.roadHalfWidth * 2;
-    ctx.stroke();
-
-    // edge lines
-    ctx.strokeStyle = "rgba(255,255,255,0.25)";
-    ctx.lineWidth = 4;
-    ctx.stroke();
-
-    // lane dash
-    ctx.strokeStyle = "rgba(255,220,120,0.85)";
-    ctx.lineWidth = 3;
-    ctx.setLineDash([24, 24]);
-    ctx.beginPath();
-    for (let i = 0; i < roadPts.length; i++) {
-      const p = roadPts[i];
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
+    // dashed center lines (3 lanes feel)
+    function dashedLine(x) {
+      ctx.strokeStyle = "rgba(255,255,255,0.7)";
+      ctx.lineWidth = 6;
+      ctx.setLineDash([34, 26]);
+      ctx.beginPath();
+      ctx.moveTo(x, 0); ctx.lineTo(x, laneCanvas.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
-    ctx.closePath();
-    ctx.stroke();
-    ctx.setLineDash([]);
+    dashedLine(laneCanvas.width * 0.5);
+    dashedLine(laneCanvas.width * 0.5 - 42);
+    dashedLine(laneCanvas.width * 0.5 + 42);
 
-    ctx.restore();
-  }
+    const roadTex = new THREE.CanvasTexture(laneCanvas);
+    roadTex.wrapS = THREE.RepeatWrapping;
+    roadTex.wrapT = THREE.RepeatWrapping;
+    roadTex.repeat.set(1, 6);
 
-  function drawDeco() {
-    for (const o of deco) {
-      if (o.type === "tree") {
-        // trunk
-        ctx.save();
-        ctx.translate(o.x, o.y);
-        ctx.scale(o.s, o.s);
-        ctx.fillStyle = "#4b2f1a";
-        ctx.fillRect(-4, -6, 8, 16);
-        // canopy
-        ctx.fillStyle = "#0e5b2a";
-        ctx.beginPath();
-        ctx.arc(0, -10, 16, 0, Math.PI * 2);
-        ctx.arc(-10, -6, 12, 0, Math.PI * 2);
-        ctx.arc(10, -6, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      } else if (o.type === "building") {
-        ctx.save();
-        ctx.translate(o.x, o.y);
-        ctx.scale(o.s, o.s);
-        ctx.fillStyle = "#2b2f3a";
-        ctx.fillRect(-18, -26, 36, 52);
-        ctx.fillStyle = "rgba(140,180,255,0.22)";
-        for (let i= -12; i<= 8; i+=10) {
-          for (let j= -18; j<= 18; j+=10) ctx.fillRect(i, j, 6, 6);
+    const roadMat = new THREE.MeshStandardMaterial({
+      map: roadTex,
+      roughness: 1,
+      metalness: 0
+    });
+
+    const roadGroup = new THREE.Group();
+    scene.add(roadGroup);
+
+    const segments = [];
+    const segGeo = new THREE.PlaneGeometry(ROAD_HALF * 2, SEG_LEN, 1, 1);
+
+    function makeSegment() {
+      const m = new THREE.Mesh(segGeo, roadMat);
+      m.rotation.x = -Math.PI / 2;
+      m.receiveShadow = true;
+      return m;
+    }
+
+    for (let i = 0; i < SEG_COUNT; i++) {
+      const seg = makeSegment();
+      roadGroup.add(seg);
+      segments.push({
+        mesh: seg,
+        z: -i * SEG_LEN,
+        x: 0,
+        y: 0,
+      });
+    }
+
+    // Road curvature function (smooth)
+    let tCurve = 0;
+    function roadOffset(z) {
+      // z is negative forward. Use t based on distance.
+      const s = (-z) * 0.015;
+      // big gentle curves + small wobble
+      return Math.sin(s * 0.7) * 7.0 + Math.sin(s * 2.1) * 1.7;
+    }
+    function roadHeight(z) {
+      const s = (-z) * 0.012;
+      return Math.sin(s * 0.9) * 1.2 + Math.sin(s * 0.23) * 2.3;
+    }
+
+    function updateSegments(carZ) {
+      // move segments to stay ahead of car
+      const minZ = carZ - (SEG_COUNT * SEG_LEN * 0.65);
+      for (const s of segments) {
+        if (s.z > carZ + SEG_LEN) {
+          // behind the camera => move forward (more negative)
+          s.z -= SEG_COUNT * SEG_LEN;
+        } else if (s.z < minZ) {
+          // too far ahead? (rare) pull back a bit
+          s.z += SEG_COUNT * SEG_LEN;
         }
-        ctx.restore();
-      } else if (o.type === "sign") {
-        ctx.save();
-        ctx.translate(o.x, o.y);
-        ctx.scale(o.s, o.s);
-        ctx.fillStyle = "#b7bfcf";
-        ctx.fillRect(-2, -6, 4, 22);
-        ctx.fillStyle = "#ffcf5a";
-        ctx.fillRect(-14, -22, 28, 14);
-        ctx.fillStyle = "#20242b";
-        ctx.fillRect(-11, -19, 22, 8);
-        ctx.restore();
-      }
-    }
-  }
-
-  function drawCar() {
-    // "cooler" car: shadow + body + windshield + stripes
-    ctx.save();
-    ctx.translate(car.x, car.y);
-    ctx.rotate(car.angle);
-
-    // shadow
-    ctx.globalAlpha = 0.28;
-    ctx.fillStyle = "#000";
-    ctx.beginPath();
-    ctx.ellipse(-2, 8, 18, 10, 0, 0, Math.PI*2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    // body
-    ctx.fillStyle = "#29a8ff"; // sporty blue
-    roundRect(ctx, -16, -24, 32, 48, 10);
-    ctx.fill();
-
-    // hood stripe
-    ctx.fillStyle = "rgba(255,255,255,0.22)";
-    roundRect(ctx, -4, -22, 8, 44, 4);
-    ctx.fill();
-
-    // windshield
-    ctx.fillStyle = "rgba(210,240,255,0.35)";
-    roundRect(ctx, -11, -10, 22, 18, 6);
-    ctx.fill();
-
-    // rear lights
-    ctx.fillStyle = "rgba(255,90,90,0.85)";
-    ctx.fillRect(-14, 18, 10, 4);
-    ctx.fillRect(4, 18, 10, 4);
-
-    // front indicator
-    ctx.fillStyle = "rgba(255,230,140,0.8)";
-    ctx.fillRect(-12, -22, 8, 4);
-    ctx.fillRect(4, -22, 8, 4);
-
-    ctx.restore();
-  }
-
-  function roundRect(ctx, x, y, w, h, r) {
-    const rr = Math.min(r, w/2, h/2);
-    ctx.beginPath();
-    ctx.moveTo(x+rr, y);
-    ctx.arcTo(x+w, y, x+w, y+h, rr);
-    ctx.arcTo(x+w, y+h, x, y+h, rr);
-    ctx.arcTo(x, y+h, x, y, rr);
-    ctx.arcTo(x, y, x+w, y, rr);
-    ctx.closePath();
-  }
-
-  // ===== Physics =====
-  let last = performance.now();
-
-  function update(dt) {
-    // Reset
-    if (keys.has("KeyR")) {
-      car.x = roadPts[10].x; car.y = roadPts[10].y;
-      car.vx = 0; car.vy = 0; car.angle = 0;
-    }
-
-    const onRoad = isOnRoad(car.x, car.y);
-
-    // Input
-    const w = keys.has("KeyW");
-    const s = keys.has("KeyS");
-    const a = keys.has("KeyA");
-    const d = keys.has("KeyD"); // FIXED: D = right
-    const handbrake = keys.has("Space");
-
-    // Forward direction
-    const fx = Math.cos(car.angle);
-    const fy = Math.sin(car.angle);
-
-    // Speed along facing direction
-    const forwardSpeed = car.vx * fx + car.vy * fy;
-
-    // Accel / brake
-    let gear = "D";
-    if (w) {
-      car.vx += fx * car.accel * dt;
-      car.vy += fy * car.accel * dt;
-      gear = "D";
-    }
-    if (s) {
-      // If moving forward, brake hard; else reverse
-      if (forwardSpeed > 40) {
-        car.vx -= fx * car.brake * dt;
-        car.vy -= fy * car.brake * dt;
-        gear = "B";
-      } else {
-        car.vx -= fx * (car.accel * 0.72) * dt;
-        car.vy -= fy * (car.accel * 0.72) * dt;
-        gear = "R";
+        const x = roadOffset(s.z);
+        const y = roadHeight(s.z);
+        s.mesh.position.set(x, y, s.z);
+        s.mesh.rotation.z = (roadOffset(s.z - 2) - roadOffset(s.z + 2)) * 0.02; // banking feel
       }
     }
 
-    // Steering strength scales with speed (less at very low speed)
-    const speed = Math.hypot(car.vx, car.vy);
-    const steerFactor = clamp(speed / 260, 0.12, 1.0);
-    const steer = (a ? -1 : 0) + (d ? 1 : 0); // A left, D right ✅
-    car.angle += steer * car.turnRate * steerFactor * dt * (onRoad ? 1.0 : 0.85);
+    // ---------- Background props (trees / buildings / mountains) ----------
+    const deco = new THREE.Group();
+    scene.add(deco);
 
-    // Grip: pull velocity toward facing direction (reduces sideways sliding)
-    const gripBase = onRoad ? car.gripOnRoad : car.gripOffRoad;
-    const grip = handbrake ? car.handbrakeGrip : gripBase;
-
-    // Decompose velocity into forward + lateral and damp lateral by grip
-    const rightx = Math.cos(car.angle + Math.PI/2);
-    const righty = Math.sin(car.angle + Math.PI/2);
-    const vF = car.vx*fx + car.vy*fy;
-    const vR = car.vx*rightx + car.vy*righty;
-
-    const damp = clamp(grip * dt, 0, 1);
-    const newVR = vR * (1 - damp);
-    car.vx = fx * vF + rightx * newVR;
-    car.vy = fy * vF + righty * newVR;
-
-    // Drag (different on/off road)
-    const drag = onRoad ? car.dragOnRoad : car.dragOffRoad;
-    car.vx *= Math.pow(drag, dt * 60);
-    car.vy *= Math.pow(drag, dt * 60);
-
-    // Cap speed
-    const max = onRoad ? car.maxSpeed : car.maxSpeed * 0.55;
-    const sp = Math.hypot(car.vx, car.vy);
-    if (sp > max) {
-      const scale = max / sp;
-      car.vx *= scale;
-      car.vy *= scale;
+    function rand(seed) { // tiny deterministic-ish random
+      seed = Math.sin(seed) * 10000;
+      return seed - Math.floor(seed);
     }
 
-    // Integrate position
-    car.x += car.vx * dt;
-    car.y += car.vy * dt;
+    function makeTree() {
+      const g = new THREE.Group();
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18, 0.22, 1.2, 8),
+        new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 1 })
+      );
+      trunk.position.y = 0.6;
+      trunk.castShadow = true;
 
-    // Keep inside world bounds
-    car.x = clamp(car.x, 60, world.w - 60);
-    car.y = clamp(car.y, 60, world.h - 60);
+      const crown = new THREE.Mesh(
+        new THREE.SphereGeometry(0.75, 10, 10),
+        new THREE.MeshStandardMaterial({ color: 0x1f7a3a, roughness: 1 })
+      );
+      crown.position.y = 1.6;
+      crown.castShadow = true;
 
-    // Camera follow
-    camera.x += (car.x - camera.x) * camera.smooth;
-    camera.y += (car.y - camera.y) * camera.smooth;
+      g.add(trunk, crown);
+      return g;
+    }
 
-    // HUD speed in mph (tuned conversion)
-    const mph = Math.round(sp * 0.14); // game-units -> mph-ish
-    spdEl.textContent = mph.toString();
-    gearEl.textContent = gear;
-    const pct = clamp(mph / 140, 0, 1) * 100; // speedometer bar target
-    spdBar.style.width = pct.toFixed(1) + "%";
-  }
+    function makeBuilding(h = 6) {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(3.2, h, 3.2),
+        new THREE.MeshStandardMaterial({ color: 0x8d96aa, roughness: 0.95, metalness: 0.05 })
+      );
+      m.position.y = h / 2;
+      m.castShadow = true;
+      return m;
+    }
 
-  // ===== Render =====
-  function render() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    function makeMountain() {
+      const m = new THREE.Mesh(
+        new THREE.ConeGeometry(18, 22, 10),
+        new THREE.MeshStandardMaterial({ color: 0x4a5f7a, roughness: 1 })
+      );
+      m.castShadow = false;
+      m.receiveShadow = true;
+      return m;
+    }
 
-    // Viewport in world coords (simple 2D camera)
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const view = {
-      x: camera.x - vw/2,
-      y: camera.y - vh/2,
-      w: vw,
-      h: vh
+    const props = [];
+    const PROP_COUNT = 160;
+
+    for (let i = 0; i < PROP_COUNT; i++) {
+      const r = Math.random();
+      let obj;
+      if (r < 0.65) obj = makeTree();
+      else obj = makeBuilding(4 + Math.random() * 18);
+
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const distanceFromRoad = ROAD_HALF + 5 + Math.random() * 30;
+      const z = -(i * 24) - 40 - Math.random() * 40;
+      const baseX = side * distanceFromRoad;
+      const x = baseX + (Math.random() - 0.5) * 6;
+
+      obj.position.set(x, 0, z);
+      deco.add(obj);
+      props.push({ obj, z, side, dx: distanceFromRoad, jitter: (Math.random()-0.5)*6 });
+    }
+
+    // Big distant mountains
+    const mountains = new THREE.Group();
+    scene.add(mountains);
+    for (let i = 0; i < 10; i++) {
+      const m = makeMountain();
+      m.position.set(-120 + i * 26, -2, -260 - (i % 3) * 60);
+      m.rotation.y = i * 0.4;
+      mountains.add(m);
+    }
+
+    function updateProps(carZ) {
+      const forwardLimit = carZ - 650;  // far ahead (more negative)
+      const behindLimit  = carZ + 80;   // behind camera
+      for (const p of props) {
+        // keep them aligned with the road's local offset, so scenery follows curves
+        const roadX = roadOffset(p.obj.position.z);
+        p.obj.position.x = roadX + p.side * p.dx + p.jitter;
+
+        if (p.obj.position.z > behindLimit) {
+          // move it forward
+          p.obj.position.z -= 24 * PROP_COUNT;
+        } else if (p.obj.position.z < forwardLimit) {
+          // if it's too far forward, pull it back a bit (rare)
+          p.obj.position.z += 24 * PROP_COUNT;
+        }
+      }
+    }
+
+    // ---------- Physics / Game Loop ----------
+    let velocity = 0;          // m/s along forward direction (negative z)
+    let steering = 0;          // -1..1
+    let heading = 0;           // radians (car yaw relative to world z)
+    let lateralVel = 0;        // sideways sliding
+    let lastTime = performance.now();
+
+    // Tuned for "not unbelievably slow"
+    const cfg = {
+      accel: 42,              // m/s^2
+      brake: 58,              // m/s^2
+      reverseAccel: 24,
+      maxSpeed: 95,           // m/s (~213 mph)
+      maxReverse: 22,
+      steerRate: 2.8,         // how fast steering changes
+      steerAtSpeed: 0.015,    // steering sensitivity drop with speed
+      grip: 9.5,              // lateral damping
+      drag: 0.7,              // air drag
+      rolling: 1.4,           // rolling resistance
+      offroadPenalty: 0.55,   // slows down off-road
     };
 
-    // World -> screen transform
-    ctx.save();
-    ctx.translate(-view.x, -view.y);
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-    // Sky + ground + mountains
-    // (Sky drawn in screen-space, so do a quick screen-space pass)
-    ctx.restore();
-    drawGradientBackground({x:0,y:0,w:vw,h:vh});
-    drawMountains({x:0,y:0,w:vw,h:vh});
-    drawGround({x:0,y:0,w:vw,h:vh});
+    // HUD
+    const mphEl = document.getElementById("mph");
+    const msEl = document.getElementById("ms");
+    const gearEl = document.getElementById("gear");
+    const fillEl = document.getElementById("speedFill");
 
-    // Back to world space
-    ctx.save();
-    ctx.translate(-view.x, -view.y);
+    function updateHUD() {
+      const mph = Math.abs(velocity) * 2.236936;
+      mphEl.textContent = Math.round(mph).toString();
+      msEl.textContent = Math.abs(velocity).toFixed(1);
+      let gear = "N";
+      if (velocity > 1) gear = "D";
+      else if (velocity < -1) gear = "R";
+      gearEl.textContent = gear;
 
-    // Road + decor + car
-    drawRoad(view);
-    drawDeco();
+      const pct = clamp(Math.abs(velocity) / cfg.maxSpeed, 0, 1) * 100;
+      fillEl.style.width = pct.toFixed(1) + "%";
+    }
 
-    // little dust effect off-road
-    if (!isOnRoad(car.x, car.y) && Math.hypot(car.vx, car.vy) > 120) {
-      ctx.save();
-      ctx.globalAlpha = 0.22;
-      ctx.fillStyle = "#c7d2c2";
-      for (let i=0;i<10;i++){
-        const t = i/10;
-        const px = car.x - Math.cos(car.angle)* (10 + t*40) + (Math.random()-0.5)*20;
-        const py = car.y - Math.sin(car.angle)* (10 + t*40) + (Math.random()-0.5)*20;
-        ctx.beginPath();
-        ctx.arc(px, py, 2 + Math.random()*3, 0, Math.PI*2);
-        ctx.fill();
+    function isOffRoad(carX, carZ) {
+      const centerX = roadOffset(carZ);
+      const dx = carX - centerX;
+      return Math.abs(dx) > (ROAD_HALF - 0.6);
+    }
+
+    function animate() {
+      const now = performance.now();
+      let dt = (now - lastTime) / 1000;
+      lastTime = now;
+      dt = Math.min(dt, 0.033); // avoid huge jumps
+
+      // Input (A/D fixed properly)
+      const forward = keys.has("KeyW") || keys.has("ArrowUp");
+      const back = keys.has("KeyS") || keys.has("ArrowDown");
+      const left = keys.has("KeyA") || keys.has("ArrowLeft");
+      const right = keys.has("KeyD") || keys.has("ArrowRight");
+      const handbrake = keys.has("Space");
+
+      // Steering smoothing
+      const targetSteer = (left ? -1 : 0) + (right ? 1 : 0);
+      steering += (targetSteer - steering) * clamp(cfg.steerRate * dt, 0, 1);
+      steering = clamp(steering, -1, 1);
+
+      // Throttle / brake
+      if (forward) {
+        velocity += cfg.accel * dt;
+      } else if (back) {
+        if (velocity > 2) velocity -= cfg.brake * dt;
+        else velocity -= cfg.reverseAccel * dt;
       }
-      ctx.restore();
+
+      // Drag + rolling resistance
+      const sign = Math.sign(velocity);
+      const drag = cfg.drag * velocity * velocity * sign; // quadratic drag
+      velocity -= drag * dt;
+
+      // rolling resistance toward 0
+      const rr = cfg.rolling * dt;
+      if (Math.abs(velocity) < rr) velocity = 0;
+      else velocity -= rr * Math.sign(velocity);
+
+      // Clamp speeds
+      velocity = clamp(velocity, -cfg.maxReverse, cfg.maxSpeed);
+
+      // Off-road slows you down + less grip
+      const offroad = isOffRoad(car.position.x, car.position.z);
+      if (offroad) velocity *= Math.pow(cfg.offroadPenalty, dt * 8);
+
+      // Turning rate depends on speed (less twitchy at high speed)
+      const speedAbs = Math.abs(velocity);
+      const steerEffect = steering / (1 + speedAbs * cfg.steerAtSpeed);
+      heading += steerEffect * (0.95 + speedAbs * 0.015) * dt;
+
+      // Lateral dynamics (simple drift)
+      lateralVel += Math.sin(heading) * velocity * 0.002; // small coupling
+      const grip = (offroad ? cfg.grip * 0.55 : cfg.grip);
+      lateralVel -= lateralVel * grip * dt;
+
+      // Handbrake = more slide + slower
+      if (handbrake && speedAbs > 6) {
+        lateralVel += steering * 8 * dt;
+        velocity *= Math.pow(0.985, dt * 60);
+      }
+
+      // Road-following: car tries to follow road curve (helps you stay centered)
+      const roadX = roadOffset(car.position.z);
+      const roadY = roadHeight(car.position.z);
+      const centerPull = (roadX - car.position.x) * 0.22;
+      car.position.x += centerPull * dt * (offroad ? 0.35 : 1.0);
+
+      // Move forward (negative z)
+      // Heading affects lateral x movement. Keep it arcadey & controllable.
+      const forwardMove = velocity * dt;
+      car.position.z -= Math.cos(heading) * forwardMove;
+      car.position.x += Math.sin(heading) * forwardMove;
+      car.position.x += lateralVel * dt;
+
+      // Keep car hovering slightly above road height
+      car.position.y = roadY;
+
+      // Rotate car to heading + small banking
+      car.rotation.y = heading;
+      car.rotation.z = -steering * clamp(speedAbs / 50, 0, 1) * 0.08;
+
+      // Wheel spin
+      const wheelSpin = forwardMove * 1.25;
+      wheels.forEach(w => w.rotation.x -= wheelSpin);
+
+      // Update world
+      updateSegments(car.position.z);
+      updateProps(car.position.z);
+
+      // Chase camera (smooth)
+      const camBack = 12;
+      const camUp = 6.5;
+      const lookAhead = 16;
+
+      const desiredCam = new THREE.Vector3(
+        car.position.x - Math.sin(heading) * camBack,
+        car.position.y + camUp,
+        car.position.z + Math.cos(heading) * camBack
+      );
+      camera.position.lerp(desiredCam, 1 - Math.pow(0.001, dt));
+
+      const desiredLook = new THREE.Vector3(
+        car.position.x + Math.sin(heading) * 0.0,
+        car.position.y + 1.2,
+        car.position.z - lookAhead
+      );
+      camera.lookAt(desiredLook);
+
+      updateHUD();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
     }
 
-    drawCar();
+    // Start
+    updateSegments(car.position.z);
+    updateProps(car.position.z);
+    animate();
 
-    // Minimap-ish corner (simple)
-    drawMiniMap(vw, vh);
-
-    ctx.restore();
-  }
-
-  function drawMiniMap(vw, vh){
-    const pad = 14;
-    const w = 180, h = 120;
-    const x = vw - w - pad, y = vh - h - pad;
-    ctx.save();
-    ctx.globalAlpha = 0.88;
-    ctx.fillStyle = "rgba(0,0,0,.35)";
-    ctx.strokeStyle = "rgba(255,255,255,.15)";
-    ctx.lineWidth = 1;
-    roundRect(ctx, x, y, w, h, 12);
-    ctx.fill();
-    ctx.stroke();
-
-    // map scale
-    const sx = w / world.w;
-    const sy = h / world.h;
-
-    // road
-    ctx.save();
-    ctx.beginPath();
-    for (let i=0;i<roadPts.length;i++){
-      const p = roadPts[i];
-      const mx = x + p.x*sx;
-      const my = y + p.y*sy;
-      if (i===0) ctx.moveTo(mx,my); else ctx.lineTo(mx,my);
-    }
-    ctx.closePath();
-    ctx.strokeStyle = "rgba(255,220,120,0.65)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // car dot
-    const cx = x + car.x*sx;
-    const cy = y + car.y*sy;
-    ctx.fillStyle = "rgba(70,200,255,0.95)";
-    ctx.beginPath();
-    ctx.arc(cx, cy, 3.5, 0, Math.PI*2);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.restore();
-  }
-
-  // ===== Main loop =====
-  function loop(now) {
-    const dt = Math.min(0.033, (now - last) / 1000);
-    last = now;
-    update(dt);
-    render();
-    requestAnimationFrame(loop);
-  }
-  requestAnimationFrame(loop);
-})();
-</script>
+    // Resize
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    });
+  </script>
 </body>
 </html>
